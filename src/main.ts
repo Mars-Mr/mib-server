@@ -1,9 +1,15 @@
+﻿import { config } from 'dotenv';
+import { resolve } from 'path';
+
+config({ path: resolve(process.cwd(), '.env') });
+
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { WinstonModule } from 'nest-winston';
 import * as winston from 'winston';
 import { AppModule } from './app.module';
 import { buildLogDefaultMeta } from './common/logger/winston-loggers.service';
+import { setupSwagger, swaggerBaseUrl } from './swagger';
 
 async function bootstrap() {
   const isProd = process.env.NODE_ENV === 'production';
@@ -55,8 +61,16 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
+  const swaggerPaths = setupSwagger(app);
+
   const port = process.env.PORT ? Number(process.env.PORT) : 3000;
   await app.listen(port);
-  nestWinston.log('info', `Listening on port ${port}`);
+  const base = swaggerBaseUrl(port);
+  nestWinston.log('info', `Listening on ${base}`);
+  if (swaggerPaths) {
+    nestWinston.log('info', `Swagger UI: ${base}${swaggerPaths.uiPath}`);
+    nestWinston.log('info', `OpenAPI JSON: ${base}${swaggerPaths.jsonPath}`);
+    nestWinston.log('info', `OpenAPI YAML: ${base}${swaggerPaths.yamlPath}`);
+  }
 }
 bootstrap();

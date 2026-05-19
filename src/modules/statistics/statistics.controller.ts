@@ -1,10 +1,14 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt/jwt-auth.guard';
 import { Roles } from '../auth/role/roles.decorator';
 import { RolesGuard } from '../auth/role/roles.guard';
+import { AttendanceStatisticsQueryDto, LessonStatisticsQueryDto, StatisticsDateRangeQueryDto } from './dto/statistics-query.dto';
 import { StatisticsService } from './statistics.service';
 
+@ApiTags('statistics')
+@ApiBearerAuth('jwt')
 @Controller('statistics')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.ADMIN, UserRole.STAFF, UserRole.COACH)
@@ -12,17 +16,17 @@ export class StatisticsController {
   constructor(private readonly statisticsService: StatisticsService) {}
 
   @Get('attendance')
-  attendance(@Query('from') from?: string, @Query('to') to?: string, @Query('studentId') studentId?: string, @Query('classId') classId?: string) {
-    return this.statisticsService.attendanceSummary({ from, to, studentId, classId });
+  attendance(@Query() query: AttendanceStatisticsQueryDto) {
+    return this.statisticsService.attendanceSummary(query);
   }
 
   @Get('lessons')
-  lessons(@Query('from') from?: string, @Query('to') to?: string, @Query('studentId') studentId?: string) {
-    return this.statisticsService.lessonConsumption({ from, to, studentId });
+  lessons(@Query() query: LessonStatisticsQueryDto) {
+    return this.statisticsService.lessonConsumption(query);
   }
 
   @Get('revenue')
-  revenue(@Query('from') from?: string, @Query('to') to?: string) {
-    return this.statisticsService.revenueSummary({ from, to });
+  revenue(@Query() query: StatisticsDateRangeQueryDto) {
+    return this.statisticsService.revenueSummary(query);
   }
 }

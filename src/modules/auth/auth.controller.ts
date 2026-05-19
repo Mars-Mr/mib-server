@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import { AuditAction } from '../../common/decorators/audit-action.decorator';
 import { UserBehavior } from '../../common/decorators/user-behavior.decorator';
@@ -9,6 +10,7 @@ import { JwtAuthGuard } from './jwt/jwt-auth.guard';
 import { RolesGuard } from './role/roles.guard';
 import { Roles } from './role/roles.decorator';
 
+@ApiTags('auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -21,6 +23,7 @@ export class AuthController {
   }
 
   @Post('register')
+  @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   register(@Body() dto: RegisterDto) {
@@ -28,6 +31,7 @@ export class AuthController {
   }
 
   @Get('admin-only')
+  @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   adminOnly() {
@@ -35,6 +39,7 @@ export class AuthController {
   }
 
   @Get('profile')
+  @ApiBearerAuth('jwt')
   @UseGuards(JwtAuthGuard)
   profile() {
     return { msg: '已登录，可访问个人信息' };
