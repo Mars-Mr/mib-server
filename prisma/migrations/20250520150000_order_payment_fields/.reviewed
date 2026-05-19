@@ -1,0 +1,3 @@
+reviewedAt: 2026-05-19
+reviewer: agent
+notes: Order payment fields; backfill orderNo and PAID status; paidAt nullable for PENDING orders.

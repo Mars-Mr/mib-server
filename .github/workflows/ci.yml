@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0.36
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: mib_server
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -ppassword"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: mysql://root:password@127.0.0.1:3306/mib_server
+      JWT_SECRET: ci_jwt_secret_at_least_32_characters_long
+      REDIS_HOST: 127.0.0.1
+      REDIS_PORT: 6379
+      NODE_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn prisma:validate
+      - run: yarn prisma:generate
+      - name: Review Prisma migrations (strict, git diff)
+        run: yarn prisma:migrate:review --strict --git
+      - run: yarn prisma:migrate:deploy
+      - run: yarn build
+      - run: yarn test --coverage --passWithNoTests
+      - run: yarn test:e2e

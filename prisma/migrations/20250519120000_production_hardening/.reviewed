@@ -1,0 +1,3 @@
+reviewed-by: team
+reviewed-at: 2025-05-19
+notes: Order.amount Float -> DECIMAL(12,2); non-unique indexes only.

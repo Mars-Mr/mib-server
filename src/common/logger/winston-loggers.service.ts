@@ -1,27 +1,29 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy } from '@nestjs/common';
 import * as winston from 'winston';
 import DailyRotateFile from 'winston-daily-rotate-file';
+import { ENV_CONFIG } from '../config/env-config.token';
+import type { EnvConfig } from '../config/env.types';
 import { PageVisitAccumulatorService } from './page-visit.accumulator';
 
 const jsonFormat = () => winston.format.combine(winston.format.timestamp(), winston.format.errors({ stack: true }), winston.format.json());
 
 /** Shared fields for log aggregation / correlation (all channels). */
-export function buildLogDefaultMeta(): Record<string, string> {
+export function buildLogDefaultMeta(env: Pick<EnvConfig, 'LOG_SERVICE_NAME' | 'NODE_ENV' | 'APP_VERSION'>): Record<string, string> {
   return {
-    service: process.env.LOG_SERVICE_NAME ?? 'mib-server',
-    env: process.env.NODE_ENV ?? 'development',
-    version: process.env.APP_VERSION ?? process.env.npm_package_version ?? '0.0.1',
+    service: env.LOG_SERVICE_NAME,
+    env: env.NODE_ENV,
+    version: env.APP_VERSION,
   };
 }
 
-function dailyFile(basename: string, logDir: string): DailyRotateFile {
+function dailyFile(basename: string, logDir: string, env: EnvConfig): DailyRotateFile {
   return new DailyRotateFile({
     dirname: logDir,
     filename: `${basename}-%DATE%.log`,
     datePattern: 'YYYY-MM-DD',
-    maxSize: process.env.LOG_MAX_SIZE ?? '20m',
-    maxFiles: process.env.LOG_MAX_FILES ?? '14d',
-    zippedArchive: process.env.LOG_ZIP_ARCHIVE === '1',
+    maxSize: env.LOG_MAX_SIZE,
+    maxFiles: env.LOG_MAX_FILES,
+    zippedArchive: env.LOG_ZIP_ARCHIVE,
   });
 }
 
@@ -37,58 +39,61 @@ export class WinstonLoggersService implements OnModuleDestroy {
 
   private readonly closables: winston.Logger[] = [];
 
-  constructor(private readonly pageHits: PageVisitAccumulatorService) {
-    const logDir = process.env.LOG_DIR ?? 'logs';
-    const isProd = process.env.NODE_ENV === 'production';
-    const baseMeta = buildLogDefaultMeta();
+  constructor(
+    private readonly pageHits: PageVisitAccumulatorService,
+    @Inject(ENV_CONFIG) private readonly env: EnvConfig,
+  ) {
+    const logDir = env.LOG_DIR;
+    const isProd = env.NODE_ENV === 'production';
+    const baseMeta = buildLogDefaultMeta(env);
 
     this.error = winston.createLogger({
       level: 'error',
       format: jsonFormat(),
       defaultMeta: { ...baseMeta, channel: 'error' },
-      transports: [dailyFile('error', logDir)],
+      transports: [dailyFile('error', logDir, env)],
     });
 
     this.access = winston.createLogger({
       level: 'info',
       format: jsonFormat(),
       defaultMeta: { ...baseMeta, channel: 'access' },
-      transports: [dailyFile('access', logDir)],
+      transports: [dailyFile('access', logDir, env)],
     });
 
     this.behavior = winston.createLogger({
       level: 'info',
       format: jsonFormat(),
       defaultMeta: { ...baseMeta, channel: 'behavior' },
-      transports: [dailyFile('behavior', logDir)],
+      transports: [dailyFile('behavior', logDir, env)],
     });
 
     this.audit = winston.createLogger({
       level: 'info',
       format: jsonFormat(),
       defaultMeta: { ...baseMeta, channel: 'audit' },
-      transports: [dailyFile('audit', logDir)],
+      transports: [dailyFile('audit', logDir, env)],
     });
 
     this.security = winston.createLogger({
       level: 'info',
       format: jsonFormat(),
       defaultMeta: { ...baseMeta, channel: 'security' },
-      transports: [dailyFile('security', logDir)],
+      transports: [dailyFile('security', logDir, env)],
     });
 
     this.pageVisit = winston.createLogger({
       level: 'info',
       format: jsonFormat(),
       defaultMeta: { ...baseMeta, channel: 'page_visit' },
-      transports: [dailyFile('page-visit', logDir)],
+      transports: [dailyFile('page-visit', logDir, env)],
     });
 
     this.app = winston.createLogger({
-      level: process.env.LOG_LEVEL ?? (isProd ? 'info' : 'debug'),
+      level: env.LOG_LEVEL,
       format: jsonFormat(),
       defaultMeta: { ...baseMeta, channel: 'app' },
-      transports: [dailyFile('app', logDir)],
+      transports: [dailyFile('app', logDir, env)],
     });
 
     this.closables.push(this.error, this.access, this.behavior, this.audit, this.security, this.pageVisit, this.app);

@@ -21,15 +21,24 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "prettier": "npx prettier --write ./src",
     "prisma:generate": "prisma generate",
+    "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:migrate:deploy:safe": "node scripts/migrate-deploy-safe.mjs",
+    "prisma:migrate:status": "prisma migrate status",
+    "prisma:migrate:review": "node scripts/review-migrations.mjs",
+    "prisma:db:push": "node scripts/prisma-db-push-guard.mjs",
+    "prisma:validate": "prisma validate",
     "prisma:studio": "prisma studio",
-    "prisma:seed": "prisma db seed"
+    "prisma:seed": "prisma db seed",
+    "prisma:backfill:schedule-locks": "node scripts/backfill-schedule-resource-locks.mjs"
   },
   "prisma": {
     "seed": "ts-node --compiler-options {\"module\":\"CommonJS\"} prisma/seed.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
@@ -48,7 +57,8 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "winston": "^3.19.0",
-    "winston-daily-rotate-file": "^5.0.0"
+    "winston-daily-rotate-file": "^5.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -95,6 +105,11 @@
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^@common/(.*)$": "<rootDir>/common/$1",
+      "^@infrastructure/(.*)$": "<rootDir>/infrastructure/$1",
+      "^@modules/(.*)$": "<rootDir>/modules/$1"
+    }
   }
 }

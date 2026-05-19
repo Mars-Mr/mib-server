@@ -1,18 +1,45 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { ScheduleStatus } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  RequestTimeoutException,
+} from '@nestjs/common';
+import { isPrismaUniqueViolation } from '../../common/utils/prisma-errors';
+import { Prisma, ScheduleStatus } from '@prisma/client';
+import { auditOnCreate, auditOnDelete, auditOnUpdate } from '../../common/audit/audit-context';
+import { DataScopeService } from '../../common/rbac/data-scope.service';
+import { getAccessContext } from '../../common/rbac/request-context';
+import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import {
+  LockOperationTimeoutError,
+  RedisBusinessService,
+} from '../../infrastructure/redis/redis-business.service';
 import { CreateClassDto } from './dto/create-class.dto';
 import { CreateCourseTypeDto } from './dto/create-course-type.dto';
 import { CreateScheduleDto } from './dto/create-schedule.dto';
 import { CreateVenueDto } from './dto/venue.dto';
+import {
+  insertScheduleResourceLocks,
+  releaseScheduleResourceLocks,
+} from './schedule-resource-lock';
 import { UpdateClassDto } from './dto/update-class.dto';
 import { UpdateCourseTypeDto } from './dto/update-course-type.dto';
 import { UpdateScheduleDto } from './dto/update-schedule.dto';
 import { UpdateVenueDto } from './dto/update-venue.dto';
 
+/** Short TTL; renewed during txn. Correctness: ScheduleResourceLock unique + Serializable tx. */
+const SCHEDULE_LOCK_TTL_SECONDS = 30;
+const SCHEDULE_LOCK_OPERATION_TIMEOUT_MS = 28_000;
+const SCHEDULE_LOCK_RENEW_INTERVAL_MS = 10_000;
+
 @Injectable()
 export class CoursesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisBiz: RedisBusinessService,
+    private readonly dataScope: DataScopeService,
+  ) {}
 
   // --- Course types ---
   createCourseType(dto: CreateCourseTypeDto) {
@@ -85,7 +112,7 @@ export class CoursesService {
       where: { id },
       include: { courseType: true, coach: true, students: { include: { student: true } } },
     });
-    if (!c) throw new NotFoundException('班级不存在');
+    if (!c) throw new NotFoundException('?????');
     return c;
   }
 
@@ -106,10 +133,17 @@ export class CoursesService {
 
   async enrollStudent(classId: string, studentId: string) {
     await this.getClass(classId);
-    return this.prisma.classStudent.create({
-      data: { classId, studentId },
-      include: { student: true },
-    });
+    try {
+      return await this.prisma.classStudent.create({
+        data: { classId, studentId },
+        include: { student: true },
+      });
+    } catch (error) {
+      if (isPrismaUniqueViolation(error)) {
+        throw new ConflictException('????????');
+      }
+      throw error;
+    }
   }
 
   async unenrollStudent(classId: string, studentId: string) {
@@ -123,53 +157,71 @@ export class CoursesService {
   async createSchedule(dto: CreateScheduleDto) {
     const startsAt = new Date(dto.startsAt);
     const endsAt = new Date(dto.endsAt);
-    if (!(startsAt < endsAt)) throw new BadRequestException('时间区间无效');
+    if (!(startsAt < endsAt)) throw new BadRequestException('??????');
 
-    await this.assertNoScheduleConflict({
-      coachId: dto.coachId,
-      venueId: dto.venueId,
-      startsAt,
-      endsAt,
-    });
+    return this.withScheduleResourceRedisLocks(dto.coachId, dto.venueId, () =>
+      this.prisma.$transaction(
+        async tx => {
+          const klass = await tx.class.findFirstOrThrow({
+            where: { id: dto.classId },
+            select: { tenantId: true },
+          });
+          const schedule = await tx.schedule.create({
+            data: {
+              tenantId: klass.tenantId ?? undefined,
+              classId: dto.classId,
+              venueId: dto.venueId,
+              coachId: dto.coachId,
+              startsAt,
+              endsAt,
+              lateGraceMinutes: dto.lateGraceMinutes ?? 15,
+              status: dto.status ?? ScheduleStatus.SCHEDULED,
+              ...auditOnCreate(),
+            },
+          });
 
-    return this.prisma.schedule.create({
-      data: {
-        classId: dto.classId,
-        venueId: dto.venueId,
-        coachId: dto.coachId,
-        startsAt,
-        endsAt,
-        lateGraceMinutes: dto.lateGraceMinutes ?? 15,
-        status: dto.status ?? ScheduleStatus.SCHEDULED,
-      },
-      include: { class: { include: { courseType: true } }, venue: true, coach: true },
-    });
+          await this.applyResourceLocks(tx, schedule.id, dto.coachId, dto.venueId, startsAt, endsAt);
+
+          return tx.schedule.findUniqueOrThrow({
+            where: { id: schedule.id },
+            include: { class: { include: { courseType: true } }, venue: true, coach: true },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
   }
 
   async listSchedules(filters: { from?: string; to?: string; classId?: string; coachId?: string }) {
-    const where: Record<string, unknown> = {
+    const base: Prisma.ScheduleWhereInput = {
       status: { not: ScheduleStatus.CANCELLED },
     };
-    if (filters.classId) where.classId = filters.classId;
-    if (filters.coachId) where.coachId = filters.coachId;
+    if (filters.classId) base.classId = filters.classId;
+    if (filters.coachId) base.coachId = filters.coachId;
     if (filters.from || filters.to) {
-      where.startsAt = {};
-      if (filters.from) (where.startsAt as Record<string, Date>).gte = new Date(filters.from);
-      if (filters.to) (where.startsAt as Record<string, Date>).lte = new Date(filters.to);
+      base.startsAt = {};
+      if (filters.from) base.startsAt.gte = new Date(filters.from);
+      if (filters.to) base.startsAt.lte = new Date(filters.to);
     }
+
+    const ctx = getAccessContext();
+    if (ctx?.dataScope === 'coach_owned' && ctx.coachId && !filters.coachId) {
+      base.coachId = ctx.coachId;
+    }
+
     return this.prisma.schedule.findMany({
-      where,
+      where: this.dataScope.schedulesWhere(base),
       orderBy: { startsAt: 'asc' },
       include: { class: { include: { courseType: true } }, venue: true, coach: true },
     });
   }
 
   async getSchedule(id: string) {
-    const s = await this.prisma.schedule.findUnique({
-      where: { id },
+    const s = await this.prisma.schedule.findFirst({
+      where: this.dataScope.schedulesWhere({ id }),
       include: { class: { include: { courseType: true } }, venue: true, coach: true },
     });
-    if (!s) throw new NotFoundException('课次不存在');
+    if (!s) throw new NotFoundException('?????');
     return s;
   }
 
@@ -177,79 +229,114 @@ export class CoursesService {
     const current = await this.getSchedule(id);
     const startsAt = dto.startsAt ? new Date(dto.startsAt) : current.startsAt;
     const endsAt = dto.endsAt ? new Date(dto.endsAt) : current.endsAt;
-    if (!(startsAt < endsAt)) throw new BadRequestException('时间区间无效');
+    if (!(startsAt < endsAt)) throw new BadRequestException('??????');
 
     const coachId = dto.coachId ?? current.coachId;
     const venueId = dto.venueId ?? current.venueId;
 
-    await this.assertNoScheduleConflict({
-      coachId,
-      venueId,
-      startsAt,
-      endsAt,
-      excludeScheduleId: id,
-    });
+    return this.withScheduleResourceRedisLocks(coachId, venueId, () =>
+      this.prisma.$transaction(
+        async tx => {
+          await releaseScheduleResourceLocks(tx, id);
 
-    return this.prisma.schedule.update({
-      where: { id },
-      data: {
-        classId: dto.classId,
-        venueId: dto.venueId,
-        coachId: dto.coachId,
-        startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
-        endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
-        lateGraceMinutes: dto.lateGraceMinutes,
-        status: dto.status,
-      },
-      include: { class: { include: { courseType: true } }, venue: true, coach: true },
-    });
+          const schedule = await tx.schedule.update({
+            where: { id },
+            data: {
+              classId: dto.classId,
+              venueId: dto.venueId,
+              coachId: dto.coachId,
+              startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
+              endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
+              lateGraceMinutes: dto.lateGraceMinutes,
+              status: dto.status,
+              ...auditOnUpdate(),
+            },
+          });
+
+          if (schedule.status !== ScheduleStatus.CANCELLED) {
+            await this.applyResourceLocks(tx, id, coachId, venueId, startsAt, endsAt);
+          }
+
+          return tx.schedule.findUniqueOrThrow({
+            where: { id },
+            include: { class: { include: { courseType: true } }, venue: true, coach: true },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
   }
 
   async deleteSchedule(id: string) {
     await this.getSchedule(id);
-    await this.prisma.schedule.update({
-      where: { id },
-      data: { status: ScheduleStatus.CANCELLED },
+    await this.prisma.$transaction(async tx => {
+      await releaseScheduleResourceLocks(tx, id);
+      await tx.schedule.update({
+        where: { id },
+        data: { status: ScheduleStatus.CANCELLED, ...auditOnDelete() },
+      });
     });
     return { ok: true };
   }
 
-  private async assertNoScheduleConflict(params: { coachId: string; venueId: string; startsAt: Date; endsAt: Date; excludeScheduleId?: string }) {
-    const { coachId, venueId, startsAt, endsAt, excludeScheduleId } = params;
-    const base = { status: { not: ScheduleStatus.CANCELLED } as const };
+  private async applyResourceLocks(
+    tx: Prisma.TransactionClient,
+    scheduleId: string,
+    coachId: string,
+    venueId: string,
+    startsAt: Date,
+    endsAt: Date,
+  ) {
+    try {
+      await insertScheduleResourceLocks(tx, scheduleId, coachId, venueId, startsAt, endsAt);
+    } catch (error) {
+      if (error instanceof Error) {
+        if (error.message === 'SCHEDULE_RESOURCE_CONFLICT') {
+          throw new BadRequestException('coach or venue is already booked for this time slot');
+        }
+        if (error.message === 'SCHEDULE_EMPTY_TIME_RANGE') {
+          throw new BadRequestException('invalid time range');
+        }
+      }
+      throw error;
+    }
+  }
 
-    const coachClash = await this.prisma.schedule.findFirst({
-      where: {
-        ...base,
-        id: excludeScheduleId ? { not: excludeScheduleId } : undefined,
-        coachId,
-        startsAt: { lt: endsAt },
-        endsAt: { gt: startsAt },
-      },
-    });
-    if (coachClash) throw new BadRequestException('教练在该时段已有排课');
-
-    const venueClash = await this.prisma.schedule.findFirst({
-      where: {
-        ...base,
-        id: excludeScheduleId ? { not: excludeScheduleId } : undefined,
-        venueId,
-        startsAt: { lt: endsAt },
-        endsAt: { gt: startsAt },
-      },
-    });
-    if (venueClash) throw new BadRequestException('场地在该时段已被占用');
+  private async withScheduleResourceRedisLocks<T>(
+    coachId: string,
+    venueId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.redisBiz.runWithBusinessLocks(
+        [`schedule:coach:${coachId}`, `schedule:venue:${venueId}`],
+        SCHEDULE_LOCK_TTL_SECONDS,
+        fn,
+        {
+          operationTimeoutMs: SCHEDULE_LOCK_OPERATION_TIMEOUT_MS,
+          renewIntervalMs: SCHEDULE_LOCK_RENEW_INTERVAL_MS,
+          onBusy: () => {
+            throw new ConflictException('????????????');
+          },
+        },
+      );
+    } catch (error) {
+      if (error instanceof LockOperationTimeoutError) {
+        throw new RequestTimeoutException('????????????');
+      }
+      throw error;
+    }
   }
 
   private async ensureCourseType(id: string) {
     const t = await this.prisma.courseType.findUnique({ where: { id } });
-    if (!t) throw new NotFoundException('课程类型不存在');
+    if (!t) throw new NotFoundException('???????');
     return t;
   }
 
   private async ensureVenue(id: string) {
     const v = await this.prisma.venue.findUnique({ where: { id } });
-    if (!v) throw new NotFoundException('场地不存在');
+    if (!v) throw new NotFoundException('?????');
     return v;
   }
 }

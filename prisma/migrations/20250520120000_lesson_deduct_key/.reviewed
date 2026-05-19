@@ -1,0 +1,3 @@
+reviewed-by: team
+reviewed-at: 2025-05-20
+notes: Adds nullable unique deductKey for check-in idempotency; no data backfill required.

@@ -1,4 +1,7 @@
-import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nestjs/common';
+import { CallHandler, ExecutionContext, Inject, Injectable, NestInterceptor } from '@nestjs/common';
+import { UserRole } from '@prisma/client';
+import { ENV_CONFIG } from '../config/env-config.token';
+import type { EnvConfig } from '../config/env.types';
 import { Reflector } from '@nestjs/core';
 import type { Request, Response } from 'express';
 import { Observable, tap } from 'rxjs';
@@ -27,24 +30,22 @@ function safeBody(body: unknown): unknown {
   return o;
 }
 
-function slowRequestThresholdMs(): number {
-  const raw = process.env.HTTP_SLOW_REQUEST_MS;
-  if (raw === undefined || raw === '') return 2000;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 2000;
-}
-
 function isMutation(method: string): boolean {
   return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
 }
 
 @Injectable()
 export class AccessBehaviorInterceptor implements NestInterceptor {
+  private readonly slowRequestMs: number;
+
   constructor(
     private readonly reflector: Reflector,
     private readonly winston: WinstonLoggersService,
     private readonly pageVisits: PageVisitAccumulatorService,
-  ) {}
+    @Inject(ENV_CONFIG) env: EnvConfig,
+  ) {
+    this.slowRequestMs = env.HTTP_SLOW_REQUEST_MS;
+  }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     if (context.getType() !== 'http') {
@@ -62,8 +63,7 @@ export class AccessBehaviorInterceptor implements NestInterceptor {
           const pathOnly = stripQuery(req.originalUrl || req.url || '');
           const routeKey = normalizeRouteKey(req.method, req.originalUrl || req.url || '');
 
-          const threshold = slowRequestThresholdMs();
-          const isSlow = durationMs >= threshold && pathOnly !== '/health';
+          const isSlow = durationMs >= this.slowRequestMs && pathOnly !== '/health';
 
           if (pathOnly !== '/health') {
             this.pageVisits.increment(routeKey);
@@ -95,7 +95,7 @@ export class AccessBehaviorInterceptor implements NestInterceptor {
               routeKey,
               statusCode: res.statusCode,
               durationMs,
-              thresholdMs: threshold,
+              thresholdMs: this.slowRequestMs,
               userId: req.user?.userId,
             });
           }
@@ -105,8 +105,8 @@ export class AccessBehaviorInterceptor implements NestInterceptor {
           if (pathOnly === '/health') return;
 
           if (auditDesc) {
-            this.winston.logAudit({
-              type: 'audit',
+            const auditEntry = {
+              type: 'audit' as const,
               action: auditDesc,
               reqId: req.id,
               requestId: req.id,
@@ -117,6 +117,33 @@ export class AccessBehaviorInterceptor implements NestInterceptor {
               role: req.user?.role,
               statusCode: res.statusCode,
               durationMs,
+              ip: req.ip,
+              userAgent: req.headers['user-agent'],
+            };
+            this.winston.logAudit(auditEntry);
+            if (req.user?.role === UserRole.ADMIN) {
+              this.winston.logAudit({
+                ...auditEntry,
+                type: 'admin_audit',
+                severity: 'high',
+              });
+            }
+          } else if (req.user?.role === UserRole.ADMIN && isMutation(req.method)) {
+            this.winston.logAudit({
+              type: 'admin_audit',
+              severity: 'high',
+              action: `${req.method} ${pathOnly}`,
+              reqId: req.id,
+              requestId: req.id,
+              method: req.method,
+              path: pathOnly,
+              userId: req.user.userId,
+              username: req.user.username,
+              role: req.user.role,
+              statusCode: res.statusCode,
+              durationMs,
+              ip: req.ip,
+              userAgent: req.headers['user-agent'],
             });
           }
 

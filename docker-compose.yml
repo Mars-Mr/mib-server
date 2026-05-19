@@ -1,6 +1,6 @@
 ﻿services:
   mysql:
-    image: ${MYSQL_IMAGE:-mysql:latest}
+    image: ${MYSQL_IMAGE:-mysql:8.0.36}
     pull_policy: never
     container_name: mib-mysql
     restart: unless-stopped

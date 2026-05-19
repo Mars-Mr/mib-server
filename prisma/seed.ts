@@ -1,29 +1,45 @@
 import { PrismaClient, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { seedRbac } from './rbac-seed';
 
 const prisma = new PrismaClient();
 
 async function main() {
+  const { tenantId } = await seedRbac(prisma);
   const hash = await bcrypt.hash('123456', 10);
+
   await prisma.user.upsert({
-    where: { username: 'admin' },
+    where: { tenantId_username: { tenantId, username: 'admin' } },
     create: {
       username: 'admin',
       passwordHash: hash,
       role: UserRole.ADMIN,
+      tenantId,
     },
-    update: {},
+    update: { passwordHash: hash },
   });
-  await prisma.user.upsert({
-    where: { username: 'coach' },
+  const coachUser = await prisma.user.upsert({
+    where: { tenantId_username: { tenantId, username: 'coach' } },
     create: {
       username: 'coach',
       passwordHash: hash,
       role: UserRole.COACH,
+      tenantId,
     },
-    update: {},
+    update: { passwordHash: hash },
   });
-  console.log('Seed: admin / coach password: 123456');
+
+  await prisma.coach.upsert({
+    where: { userId: coachUser.id },
+    create: {
+      name: 'Demo Coach',
+      userId: coachUser.id,
+      tenantId,
+    },
+    update: { tenantId },
+  });
+
+  console.log('Seed: admin / coach password: 123456 (tenant: default)');
 }
 
 main()

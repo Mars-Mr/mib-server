@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsInt, IsOptional, IsString, Length, Min } from 'class-validator';
+import { DEFAULT_CURRENCY } from '../../../common/money/money';
 import { API_UUID_EXAMPLE } from '../../../common/swagger/api-param.decorators';
 
 export class CreateOrderDto {
@@ -12,7 +13,21 @@ export class CreateOrderDto {
   @IsString()
   title: string;
 
-  @ApiProperty({ description: '订单金额', example: 3999 })
-  @IsNumber()
-  amount: number;
+  @ApiProperty({
+    description: '订单金额（最小货币单位，CNY 为分）。例：3999.00 元 = 399900',
+    example: 399900,
+  })
+  @IsInt()
+  @Min(1)
+  amountCents: number;
+
+  @ApiPropertyOptional({
+    description: 'ISO 4217 货币代码',
+    example: DEFAULT_CURRENCY,
+    default: DEFAULT_CURRENCY,
+  })
+  @IsOptional()
+  @IsString()
+  @Length(3, 3)
+  currency?: string;
 }

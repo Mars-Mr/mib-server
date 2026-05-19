@@ -1,15 +1,35 @@
-import { randomBytes } from 'crypto';
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { AttendanceMethod, AttendanceStatus, LeaveStatus, MembershipStatus, ScheduleStatus } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+﻿import { randomBytes } from 'crypto';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  RequestTimeoutException,
+} from '@nestjs/common';
+import { AttendanceMethod, AttendanceStatus, LeaveStatus, Prisma, ScheduleStatus } from '@prisma/client';
+import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import {
+  LockOperationTimeoutError,
+  RedisBusinessService,
+} from '../../infrastructure/redis/redis-business.service';
 import { distanceMeters } from '../../common/utils/geo';
+import { deductLessonsForCheckIn } from './attendance-lesson-deduct';
 import { CheckInDto } from './dto/check-in.dto';
 import { CheckOutDto } from './dto/check-out.dto';
 import { CreateLeaveRequestDto } from './dto/leave-request.dto';
 
+/** Short TTL; renewed while txn runs. Correctness: Serializable tx + lesson businessKey + conditional updateMany. */
+const CHECKIN_LOCK_TTL_SECONDS = 15;
+const CHECKIN_LOCK_OPERATION_TIMEOUT_MS = 14_000;
+const CHECKIN_LOCK_RENEW_INTERVAL_MS = 5_000;
+
 @Injectable()
 export class AttendanceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisBiz: RedisBusinessService,
+  ) {}
 
   async issueQrToken(scheduleId: string) {
     const schedule = await this.prisma.schedule.findUnique({ where: { id: scheduleId } });
@@ -140,66 +160,65 @@ export class AttendanceService {
     },
   ) {
     const { status, method, checkInAt, checkInLat, checkInLng, skipDeduct, deductAmount } = params;
+    const needsDeduct = !skipDeduct && !!deductAmount && deductAmount > 0;
 
-    return this.prisma.$transaction(async tx => {
-      const saved = await tx.attendanceRecord.upsert({
-        where: { studentId_scheduleId: { studentId, scheduleId } },
-        create: {
-          studentId,
-          scheduleId,
-          status,
-          method,
-          checkInAt,
-          checkInLat,
-          checkInLng,
+    const runTransaction = () =>
+      this.prisma.$transaction(
+        async tx => {
+          const attendance = await tx.attendanceRecord.upsert({
+            where: { studentId_scheduleId: { studentId, scheduleId } },
+            create: {
+              studentId,
+              scheduleId,
+              status,
+              method,
+              checkInAt,
+              checkInLat,
+              checkInLng,
+            },
+            update: {
+              status,
+              method,
+              ...(checkInAt !== undefined ? { checkInAt } : {}),
+              checkInLat,
+              checkInLng,
+            },
+          });
+
+          const deductOutcome = needsDeduct
+            ? await deductLessonsForCheckIn(tx, studentId, scheduleId, deductAmount!)
+            : null;
+
+          return {
+            attendance,
+            deducted: deductOutcome === 'deducted',
+          };
         },
-        update: {
-          status,
-          method,
-          ...(checkInAt !== undefined ? { checkInAt } : {}),
-          checkInLat,
-          checkInLng,
+        {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 5000,
+          timeout: 15000,
+        },
+      );
+
+    if (!needsDeduct) {
+      return runTransaction();
+    }
+
+    const lockResource = `checkin:${studentId}:${scheduleId}`;
+    try {
+      return await this.redisBiz.runWithBusinessLock(lockResource, CHECKIN_LOCK_TTL_SECONDS, runTransaction, {
+        operationTimeoutMs: CHECKIN_LOCK_OPERATION_TIMEOUT_MS,
+        renewIntervalMs: CHECKIN_LOCK_RENEW_INTERVAL_MS,
+        onBusy: () => {
+          throw new ConflictException('签到处理中，请稍后重试');
         },
       });
-
-      let deducted = false;
-      if (!skipDeduct && deductAmount && deductAmount > 0) {
-        const already = await tx.lessonTransaction.findFirst({
-          where: {
-            scheduleId,
-            membership: { studentId },
-          },
-        });
-        if (!already) {
-          const card = await tx.membershipCard.findFirst({
-            where: {
-              studentId,
-              status: MembershipStatus.ACTIVE,
-              validFrom: { lte: new Date() },
-              validTo: { gte: new Date() },
-              remainingLessons: { gte: deductAmount },
-            },
-            orderBy: { validTo: 'asc' },
-          });
-          if (card) {
-            await tx.lessonTransaction.create({
-              data: {
-                membershipId: card.id,
-                delta: -deductAmount,
-                reason: 'CLASS_CHECK_IN',
-                scheduleId,
-              },
-            });
-            await tx.membershipCard.update({
-              where: { id: card.id },
-              data: { remainingLessons: { decrement: deductAmount } },
-            });
-            deducted = true;
-          }
-        }
+    } catch (error) {
+      if (error instanceof LockOperationTimeoutError) {
+        throw new RequestTimeoutException('签到处理超时，请稍后重试');
       }
-
-      return { attendance: saved, deducted };
-    });
+      throw error;
+    }
   }
 }

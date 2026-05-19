@@ -1,0 +1,3 @@
+reviewed-by: team
+reviewed-at: 2025-05-20
+notes: Adds version column with default 0 for optimistic locking.

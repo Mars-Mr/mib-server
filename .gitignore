@@ -4,6 +4,9 @@
 /node_modules
 /build
 
+# DB backups (migrate-deploy-safe / backup-mysql.sh)
+/backups/
+
 # Logs (keep directory, ignore rotated files)
 /logs/*
 !/logs/.gitkeep
@@ -37,8 +40,11 @@ lerna-debug.log*
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# dotenv environment variable files
+# dotenv environment variable files (never commit real secrets)
 .env
+.env.development
+.env.test
+.env.production
 .env.development.local
 .env.test.local
 .env.production.local

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
+import { formatAmountFromCents } from '../../common/money/money';
+import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 @Injectable()
 export class StatisticsService {
@@ -63,9 +64,14 @@ export class StatisticsService {
     }
     const agg = await this.prisma.order.aggregate({
       where,
-      _sum: { amount: true },
+      _sum: { amountCents: true },
       _count: true,
     });
-    return { orderCount: agg._count, totalAmount: agg._sum.amount ?? 0 };
+    const totalCents = agg._sum.amountCents ?? 0;
+    return {
+      orderCount: agg._count,
+      totalAmountCents: totalCents,
+      totalAmount: formatAmountFromCents(totalCents),
+    };
   }
 }

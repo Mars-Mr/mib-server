@@ -1,21 +1,20 @@
-﻿import { config } from 'dotenv';
-import { resolve } from 'path';
-
-config({ path: resolve(process.cwd(), '.env') });
-
-import { ValidationPipe } from '@nestjs/common';
+﻿import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { WinstonModule } from 'nest-winston';
 import * as winston from 'winston';
 import { AppModule } from './app.module';
+import { getEnvConfig, loadEnvFile } from './common/config/env.loader';
 import { buildLogDefaultMeta } from './common/logger/winston-loggers.service';
 import { setupSwagger, swaggerBaseUrl } from './swagger';
 
 async function bootstrap() {
-  const isProd = process.env.NODE_ENV === 'production';
+  loadEnvFile();
+  const env = getEnvConfig();
+  const isProd = env.NODE_ENV === 'production';
 
   const nestWinston = WinstonModule.createLogger({
-    level: process.env.LOG_LEVEL ?? 'info',
+    level: env.LOG_LEVEL,
     transports: [
       new winston.transports.Console(
         isProd
@@ -25,7 +24,7 @@ async function bootstrap() {
                 winston.format.errors({ stack: true }),
                 winston.format.printf(info => {
                   const { level, message, timestamp, context, ...rest } = info;
-                  const meta = { ...buildLogDefaultMeta(), level, context, msg: message, ...rest };
+                  const meta = { ...buildLogDefaultMeta(env), level, context, msg: message, ...rest };
                   return JSON.stringify({ timestamp, ...meta });
                 }),
               ),
@@ -52,7 +51,10 @@ async function bootstrap() {
     ],
   });
 
-  const app = await NestFactory.create(AppModule, { logger: nestWinston });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: nestWinston });
+  if (isProd) {
+    app.set('trust proxy', 1);
+  }
   app.enableShutdownHooks();
   app.useGlobalPipes(
     new ValidationPipe({
@@ -61,11 +63,10 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
-  const swaggerPaths = setupSwagger(app);
+  const swaggerPaths = setupSwagger(app, env);
 
-  const port = process.env.PORT ? Number(process.env.PORT) : 3000;
-  await app.listen(port);
-  const base = swaggerBaseUrl(port);
+  await app.listen(env.PORT);
+  const base = swaggerBaseUrl(env.PORT, env.SWAGGER_HOST);
   nestWinston.log('info', `Listening on ${base}`);
   if (swaggerPaths) {
     nestWinston.log('info', `Swagger UI: ${base}${swaggerPaths.uiPath}`);

@@ -21,4 +21,9 @@ export class CreateCoachDto {
   @IsOptional()
   @IsString()
   userId?: string;
+
+  @ApiPropertyOptional({ description: '所属租户 ID', example: API_UUID_EXAMPLE })
+  @IsOptional()
+  @IsString()
+  tenantId?: string;
 }

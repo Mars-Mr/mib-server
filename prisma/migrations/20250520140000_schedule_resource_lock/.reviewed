@@ -1,0 +1,3 @@
+reviewed-by: team
+reviewed-at: 2025-05-20
+notes: New table for coach/venue time-slot unique locks; run backfill for existing schedules after deploy.

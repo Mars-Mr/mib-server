@@ -1,3 +1,7 @@
+import type { UserRole } from '@prisma/client';
+import type { AccessContext } from '../common/rbac/data-scope.types';
+import type { PermissionCode } from '../common/rbac/permission.codes';
+
 declare global {
   namespace Express {
     interface Request {
@@ -8,7 +12,11 @@ declare global {
     interface User {
       userId: string;
       username: string;
-      role: string;
+      role: UserRole;
+      /** JWT ID — used for logout / revocation */
+      jti: string;
+      permissions: PermissionCode[];
+      access: AccessContext;
     }
   }
 }

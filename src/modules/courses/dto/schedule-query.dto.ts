@@ -1,8 +1,9 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsString } from 'class-validator';
+import { PaginationQueryDto } from '../../../common/swagger/api-pagination.dto';
 import { API_UUID_EXAMPLE } from '../../../common/swagger/api-param.decorators';
 
-export class ScheduleListQueryDto {
+export class ScheduleListQueryDto extends PaginationQueryDto {
   @ApiPropertyOptional({ description: '排课开始时间下限（ISO 8601）', example: '2026-01-01T00:00:00.000Z' })
   @IsOptional()
   @IsString()

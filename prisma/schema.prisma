@@ -26,6 +26,11 @@ enum ScheduleStatus {
   COMPLETED
 }
 
+enum ScheduleResourceType {
+  COACH
+  VENUE
+}
+
 enum MembershipStatus {
   ACTIVE
   EXPIRED
@@ -51,19 +56,116 @@ enum AttendanceStatus {
   LEAVE
 }
 
+enum OrderStatus {
+  PENDING
+  PAID
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentProvider {
+  MOCK
+  WECHAT
+  ALIPAY
+}
+
+/// SaaS / multi-store tenant (aka org / campus). All core business rows reference `tenantId`.
+model Tenant {
+  id           String         @id @default(uuid())
+  code         String         @unique
+  name         String
+  status       String         @default("ACTIVE")
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  users        User[]
+  members      UserTenant[]
+  students     Student[]
+  coaches      Coach[]
+  venues       Venue[]
+  classes      Class[]
+  courseTypes  CourseType[]
+  schedules    Schedule[]
+  memberships  MembershipCard[]
+  orders       Order[]
+}
+
+/// Functional permission point (e.g. `students:read`). Assigned to roles, not users directly.
+model Permission {
+  id          String           @id @default(uuid())
+  code        String           @unique
+  description String?
+  roles       RolePermission[]
+}
+
+/// Business role decoupled from `User.role` enum; `code` matches enum for migration.
+model Role {
+  id          String           @id @default(uuid())
+  code        String           @unique
+  name        String
+  permissions RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model UserTenant {
+  userId     String
+  tenantId   String
+  isPrimary  Boolean @default(false)
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant     Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@id([userId, tenantId])
+  @@index([tenantId])
+}
+
 model User {
-  id           String   @id @default(uuid())
-  username     String   @unique
+  id           String       @id @default(uuid())
+  tenantId     String?
+  tenant       Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  username     String
   passwordHash String
-  role         UserRole @default(STAFF)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         UserRole     @default(STAFF)
+  /// Bumped on password change to invalidate existing JWTs (`tv` claim).
+  tokenVersion Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
   student      Student?
   coach        Coach?
+  loginEvents  LoginEvent[]
+  tenants      UserTenant[]
+
+  @@unique([tenantId, username])
+  @@index([tenantId])
+}
+
+model LoginEvent {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  username   String
+  success    Boolean
+  ip         String?
+  userAgent  String?  @db.VarChar(512)
+  deviceHint String?
+  reason     String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([username, createdAt])
+  @@index([ip, createdAt])
 }
 
 model Student {
   id                 String               @id @default(uuid())
+  tenantId           String?
+  tenant             Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   userId             String?              @unique
   user               User?                @relation(fields: [userId], references: [id])
   name               String
@@ -82,6 +184,10 @@ model Student {
   attendanceRecords  AttendanceRecord[]
   leaveRequests      LeaveRequest[]
   orders             Order[]
+  lessonTransactions LessonTransaction[]
+
+  @@index([tenantId])
+  @@index([phone])
 }
 
 model Tag {
@@ -116,51 +222,67 @@ model StudentGroup {
 
 model CourseType {
   id                  String   @id @default(uuid())
+  tenantId            String?
+  tenant              Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   kind                CourseKind
   name                String
   defaultLessonDeduct Int      @default(1)
   classes             Class[]
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model Coach {
-  id        String     @id @default(uuid())
-  userId    String?    @unique
-  user      User?      @relation(fields: [userId], references: [id])
-  name      String
+  id        String    @id @default(uuid())
+  tenantId  String?
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  userId    String?   @unique
+  user           User?         @relation(fields: [userId], references: [id])
+  name           String
   phone     String?
   bio       String?    @db.Text
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
   classes   Class[]
   schedules Schedule[]
+
+  @@index([tenantId])
 }
 
 model Venue {
-  id              String     @id @default(uuid())
-  name            String
+  id        String    @id @default(uuid())
+  tenantId  String?
+  tenant    Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  name      String
   address         String?
   latitude        Float?
   longitude       Float?
   geofenceRadiusM Int?
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
-  schedules       Schedule[]
+  schedules Schedule[]
+
+  @@index([tenantId])
 }
 
 model Class {
-  id           String         @id @default(uuid())
+  id           String     @id @default(uuid())
+  tenantId     String?
+  tenant       Tenant?    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   courseTypeId String
-  courseType   CourseType     @relation(fields: [courseTypeId], references: [id])
-  name         String
+  courseType     CourseType     @relation(fields: [courseTypeId], references: [id])
+  name           String
   coachId      String?
   coach        Coach?         @relation(fields: [coachId], references: [id])
   maxStudents  Int?
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
   students     ClassStudent[]
-  schedules    Schedule[]
+  schedules Schedule[]
+
+  @@index([tenantId])
 }
 
 model ClassStudent {
@@ -174,28 +296,56 @@ model ClassStudent {
 }
 
 model Schedule {
-  id               String               @id @default(uuid())
-  classId          String
-  class            Class                @relation(fields: [classId], references: [id], onDelete: Cascade)
-  venueId          String
-  venue            Venue                @relation(fields: [venueId], references: [id])
-  coachId          String
-  coach            Coach                @relation(fields: [coachId], references: [id])
-  startsAt         DateTime
-  endsAt           DateTime
-  lateGraceMinutes Int                  @default(15)
-  status           ScheduleStatus       @default(SCHEDULED)
-  attendanceRecords AttendanceRecord[]
-  leaveRequests    LeaveRequest[]
-  qrTokens         ScheduleQrToken[]
+  id                 String                 @id @default(uuid())
+  tenantId           String?
+  tenant             Tenant?                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  classId            String
+  class              Class                  @relation(fields: [classId], references: [id], onDelete: Cascade)
+  venueId            String
+  venue              Venue                  @relation(fields: [venueId], references: [id])
+  coachId            String
+  coach              Coach                  @relation(fields: [coachId], references: [id])
+  startsAt           DateTime
+  endsAt             DateTime
+  lateGraceMinutes   Int                    @default(15)
+  status             ScheduleStatus         @default(SCHEDULED)
+  createdBy          String?
+  updatedBy          String?
+  deletedBy          String?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  attendanceRecords  AttendanceRecord[]
+  leaveRequests      LeaveRequest[]
+  qrTokens           ScheduleQrToken[]
   lessonTransactions LessonTransaction[]
+  resourceLocks      ScheduleResourceLock[]
 
+  @@index([tenantId])
+  @@index([classId, startsAt])
+  @@index([status, startsAt])
   @@index([coachId, startsAt])
   @@index([venueId, startsAt])
+  @@index([createdBy])
+}
+
+/// Discrete time-slot locks for coach/venue; unique (resourceType, resourceId, timeSlotKey) prevents overlapping bookings.
+model ScheduleResourceLock {
+  id           String               @id @default(uuid())
+  resourceType ScheduleResourceType
+  resourceId   String
+  timeSlotKey  String
+  scheduleId   String
+  schedule     Schedule             @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  createdAt    DateTime             @default(now())
+
+  @@unique([resourceType, resourceId, timeSlotKey])
+  @@index([scheduleId])
 }
 
 model MembershipCard {
   id               String               @id @default(uuid())
+  tenantId         String?
+  tenant           Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   studentId        String
   student          Student              @relation(fields: [studentId], references: [id], onDelete: Cascade)
   title            String
@@ -204,22 +354,46 @@ model MembershipCard {
   validFrom        DateTime
   validTo          DateTime
   status           MembershipStatus     @default(ACTIVE)
+  version          Int                  @default(0)
+  createdBy        String?
+  updatedBy        String?
+  deletedBy        String?
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
   transactions     LessonTransaction[]
+
+  @@index([tenantId])
+  @@index([studentId])
+  @@index([studentId, status, validTo])
+  @@index([createdBy])
 }
 
 model LessonTransaction {
-  id           String          @id @default(uuid())
-  membershipId String
-  membership   MembershipCard  @relation(fields: [membershipId], references: [id], onDelete: Cascade)
-  delta        Int
-  reason       String
-  scheduleId   String?
-  schedule     Schedule?       @relation(fields: [scheduleId], references: [id])
-  createdAt    DateTime        @default(now())
+  id              String          @id @default(uuid())
+  membershipId    String
+  membership      MembershipCard  @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  studentId       String
+  student         Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  delta           Int
+  reason          String
+  scheduleId      String?
+  schedule        Schedule?       @relation(fields: [scheduleId], references: [id])
+  /// Global business idempotency key, e.g. checkin:{studentId}:{scheduleId}
+  businessKey     String          @unique
+  operatorId      String?
+  beforeRemaining Int?
+  afterRemaining  Int?
+  metadata        Json?
+  createdBy       String?
+  updatedBy       String?
+  deletedBy       String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   @@unique([membershipId, scheduleId])
+  @@index([membershipId, createdAt])
+  @@index([studentId, createdAt])
+  @@index([createdBy])
 }
 
 model LeaveRequest {
@@ -250,6 +424,8 @@ model AttendanceRecord {
   updatedAt  DateTime           @updatedAt
 
   @@unique([studentId, scheduleId])
+  @@index([scheduleId, status])
+  @@index([studentId, createdAt])
 }
 
 model ScheduleQrToken {
@@ -259,14 +435,38 @@ model ScheduleQrToken {
   token      String   @unique
   expiresAt  DateTime
   createdAt  DateTime @default(now())
+
+  @@index([scheduleId, expiresAt])
 }
 
 model Order {
-  id        String   @id @default(uuid())
-  studentId String?
-  student   Student? @relation(fields: [studentId], references: [id])
-  title     String
-  amount    Float
-  paidAt    DateTime @default(now())
-  createdAt DateTime @default(now())
+  id              String           @id @default(uuid())
+  tenantId        String?
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  orderNo         String           @unique
+  studentId       String?
+  student         Student?         @relation(fields: [studentId], references: [id])
+  title           String
+  /// Amount in minor units (e.g. CNY fen); never use floating point for money.
+  amountCents     Int
+  currency        String           @default("CNY")
+  status          OrderStatus      @default(PENDING)
+  paymentProvider PaymentProvider?
+  providerTradeNo String?
+  idempotencyKey  String?          @unique
+  paidAt          DateTime?
+  refundedAt      DateTime?
+  createdBy       String?
+  updatedBy       String?
+  deletedBy       String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@unique([paymentProvider, providerTradeNo])
+  @@index([tenantId])
+  @@index([studentId])
+  @@index([studentId, paidAt])
+  @@index([status])
+  @@index([paidAt])
+  @@index([createdBy])
 }

@@ -1,15 +1,24 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { PrismaService } from '../../prisma/prisma.service';
+import { DataScopeService } from '../../common/rbac/data-scope.service';
+import { getAccessContext } from '../../common/rbac/request-context';
+import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { CreateStudentDto } from './dto/create-student.dto';
 import { UpdateStudentDto } from './dto/update-student.dto';
 
 @Injectable()
 export class StudentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly dataScope: DataScopeService,
+  ) {}
 
   create(dto: CreateStudentDto) {
+    const ctx = getAccessContext();
+    const tenantId = dto.tenantId ?? ctx?.activeTenantId ?? ctx?.tenantIds[0];
+
     return this.prisma.student.create({
       data: {
+        tenantId,
         name: dto.name,
         phone: dto.phone,
         avatarUrl: dto.avatarUrl,
@@ -25,14 +34,15 @@ export class StudentsService {
 
   findAll() {
     return this.prisma.student.findMany({
+      where: this.dataScope.studentsWhere(),
       orderBy: { createdAt: 'desc' },
       include: { tags: { include: { tag: true } }, groups: { include: { group: true } } },
     });
   }
 
   async findOne(id: string) {
-    const s = await this.prisma.student.findUnique({
-      where: { id },
+    const s = await this.prisma.student.findFirst({
+      where: this.dataScope.studentsWhere({ id }),
       include: { tags: { include: { tag: true } }, groups: { include: { group: true } } },
     });
     if (!s) throw new NotFoundException('学员不存在');
