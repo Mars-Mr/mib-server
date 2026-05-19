@@ -1,0 +1,64 @@
+﻿services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:latest}
+    pull_policy: never
+    container_name: mib-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-mib_server}
+      MYSQL_USER: ${MYSQL_USER:-mib_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mib_password}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - mib-network
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.2}
+    pull_policy: never
+    container_name: mib-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+      - --requirepass
+      - ${REDIS_PASSWORD:-change_me_in_production}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD:-change_me_in_production}\" ping | grep PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - mib-network
+
+  # If the NestJS app is containerized later, attach it to mib-network and use:
+  # DATABASE_URL=mysql://mib_user:mib_password@mysql:3306/mib_server
+  # REDIS_HOST=redis
+
+volumes:
+  mysql-data:
+  redis-data:
+
+networks:
+  mib-network:
+    driver: bridge

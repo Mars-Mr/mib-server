@@ -1,0 +1,272 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  COACH
+  STAFF
+  STUDENT
+}
+
+enum CourseKind {
+  GROUP
+  PRIVATE
+  LARGE_CLASS
+}
+
+enum ScheduleStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  FROZEN
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AttendanceMethod {
+  QR
+  MANUAL
+  GPS
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  ABSENT
+  LEAVE
+}
+
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  role         UserRole @default(STAFF)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  student      Student?
+  coach        Coach?
+}
+
+model Student {
+  id                 String               @id @default(uuid())
+  userId             String?              @unique
+  user               User?                @relation(fields: [userId], references: [id])
+  name               String
+  phone              String?
+  avatarUrl          String?
+  emergencyName      String?
+  emergencyPhone     String?
+  emergencyRelation  String?
+  joinedAt           DateTime             @default(now())
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  tags               StudentTag[]
+  groups             StudentGroup[]
+  memberships        MembershipCard[]
+  classStudents      ClassStudent[]
+  attendanceRecords  AttendanceRecord[]
+  leaveRequests      LeaveRequest[]
+  orders             Order[]
+}
+
+model Tag {
+  id       String       @id @default(uuid())
+  name     String       @unique
+  students StudentTag[]
+}
+
+model StudentTag {
+  studentId String
+  tagId     String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([studentId, tagId])
+}
+
+model Group {
+  id       String         @id @default(uuid())
+  name     String         @unique
+  students StudentGroup[]
+}
+
+model StudentGroup {
+  studentId String
+  groupId   String
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  group     Group   @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([studentId, groupId])
+}
+
+model CourseType {
+  id                  String   @id @default(uuid())
+  kind                CourseKind
+  name                String
+  defaultLessonDeduct Int      @default(1)
+  classes             Class[]
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model Coach {
+  id        String     @id @default(uuid())
+  userId    String?    @unique
+  user      User?      @relation(fields: [userId], references: [id])
+  name      String
+  phone     String?
+  bio       String?    @db.Text
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  classes   Class[]
+  schedules Schedule[]
+}
+
+model Venue {
+  id              String     @id @default(uuid())
+  name            String
+  address         String?
+  latitude        Float?
+  longitude       Float?
+  geofenceRadiusM Int?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  schedules       Schedule[]
+}
+
+model Class {
+  id           String         @id @default(uuid())
+  courseTypeId String
+  courseType   CourseType     @relation(fields: [courseTypeId], references: [id])
+  name         String
+  coachId      String?
+  coach        Coach?         @relation(fields: [coachId], references: [id])
+  maxStudents  Int?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  students     ClassStudent[]
+  schedules    Schedule[]
+}
+
+model ClassStudent {
+  classId   String
+  studentId String
+  class     Class   @relation(fields: [classId], references: [id], onDelete: Cascade)
+  student   Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime @default(now())
+
+  @@id([classId, studentId])
+}
+
+model Schedule {
+  id               String               @id @default(uuid())
+  classId          String
+  class            Class                @relation(fields: [classId], references: [id], onDelete: Cascade)
+  venueId          String
+  venue            Venue                @relation(fields: [venueId], references: [id])
+  coachId          String
+  coach            Coach                @relation(fields: [coachId], references: [id])
+  startsAt         DateTime
+  endsAt           DateTime
+  lateGraceMinutes Int                  @default(15)
+  status           ScheduleStatus       @default(SCHEDULED)
+  attendanceRecords AttendanceRecord[]
+  leaveRequests    LeaveRequest[]
+  qrTokens         ScheduleQrToken[]
+  lessonTransactions LessonTransaction[]
+
+  @@index([coachId, startsAt])
+  @@index([venueId, startsAt])
+}
+
+model MembershipCard {
+  id               String               @id @default(uuid())
+  studentId        String
+  student          Student              @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  title            String
+  totalLessons     Int
+  remainingLessons Int
+  validFrom        DateTime
+  validTo          DateTime
+  status           MembershipStatus     @default(ACTIVE)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  transactions     LessonTransaction[]
+}
+
+model LessonTransaction {
+  id           String          @id @default(uuid())
+  membershipId String
+  membership   MembershipCard  @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  delta        Int
+  reason       String
+  scheduleId   String?
+  schedule     Schedule?       @relation(fields: [scheduleId], references: [id])
+  createdAt    DateTime        @default(now())
+
+  @@unique([membershipId, scheduleId])
+}
+
+model LeaveRequest {
+  id         String      @id @default(uuid())
+  studentId  String
+  student    Student     @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  scheduleId String
+  schedule   Schedule    @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  status     LeaveStatus @default(APPROVED)
+  createdAt  DateTime    @default(now())
+
+  @@unique([studentId, scheduleId])
+}
+
+model AttendanceRecord {
+  id         String             @id @default(uuid())
+  studentId  String
+  student    Student            @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  scheduleId String
+  schedule   Schedule           @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  checkInAt  DateTime?
+  checkOutAt DateTime?
+  method     AttendanceMethod?
+  status     AttendanceStatus
+  checkInLat Float?
+  checkInLng Float?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@unique([studentId, scheduleId])
+}
+
+model ScheduleQrToken {
+  id         String   @id @default(uuid())
+  scheduleId String
+  schedule   Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+}
+
+model Order {
+  id        String   @id @default(uuid())
+  studentId String?
+  student   Student? @relation(fields: [studentId], references: [id])
+  title     String
+  amount    Float
+  paidAt    DateTime @default(now())
+  createdAt DateTime @default(now())
+}

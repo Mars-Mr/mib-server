@@ -3,8 +3,9 @@
 /node_modules
 /build
 
-# Logs
-logs
+# Logs (keep directory, ignore rotated files)
+/logs/*
+!/logs/.gitkeep
 *.log
 npm-debug.log*
 pnpm-debug.log*
